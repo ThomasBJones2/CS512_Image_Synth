@@ -1,0 +1,649 @@
+#include <cml/cml.h>
+using namespace cml;
+inline vector2d BB_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d FCorner,  vector3d BCorner);
+
+/*Find the distance from the eye at (0,0,0) to the Plane)*/
+/*Equation formulated on scratch paper*/
+inline vector2d Plane_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d PlanePoint, vector3d Normal){
+	vector2d dist;
+	dist[0] = -dot(Normal,(Eye - PlanePoint))/(dot(Normal,Pixel_Ray));
+
+	return dist;
+}
+
+/*This function finds the ray of length 1 from the eye to a particular pixel in the 
+fustrum asuming that the center of the fustrum is length 1 away from the eye and the eye
+is centered in the fustrum*/
+
+inline vector3d FindPR(vector3d Eye, vector3d Thetas, int w, int h, int width, int height,float width_dist){
+	double aspect_ratio = ((double)height)/((double)width);
+	double widthrand,heightrand;
+	widthrand = ((double)(rand()%1000000))/(double)(1000000.0);	
+	heightrand = ((double)(rand()%1000000))/(double)(1000000.0);
+	matrix33d X_Axis,Y_Axis,Z_Axis;
+	vector3d ray(((double)(w- width/2.0 + widthrand))/((double)width)*width_dist,
+			((double)(h- height/2.0 + heightrand))/((double)height)*width_dist*aspect_ratio,1);
+
+	matrix_rotation_world_x(X_Axis, Thetas[0]);
+//	cout << "The image along x: " << X_Axis << "\n";	
+	matrix_rotation_world_y(Y_Axis, Thetas[1]);
+//	cout << "The image along y: " << Y_Axis << "\n";
+	matrix_rotation_world_z(Z_Axis, Thetas[2]);	
+//	cout << "The image along z: " << Z_Axis << "\n";
+
+	ray = VectMatrixMult(ray, X_Axis);
+	ray = VectMatrixMult(ray, Y_Axis);
+	ray = VectMatrixMult(ray, Z_Axis);
+
+	ray = ray*1.0/((double)(ray.length()));
+
+	return ray;
+}
+
+
+/*Find the distance from the eye at (0,0,0) to the cylindar)*/
+/*Equation formulated on scratch paper*/
+inline vector2d Cylindar_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d Direction, vector3d CenterPoint,  double Radius, double Length){
+	vector2d dist,planeDist;
+	float Sqrt_Val;
+	float a,b,c;
+	vector3d EyetoPoint = Eye - CenterPoint;
+	bool capBool1,capBool2;
+	capBool1 = FALSE;
+	capBool2 = FALSE;
+
+	a = dot(Pixel_Ray,Pixel_Ray)-dot(Pixel_Ray,Direction)*dot(Pixel_Ray,Direction);
+	b = 2*(dot(Pixel_Ray,EyetoPoint) - dot(Pixel_Ray,Direction)*dot(EyetoPoint,Direction));	
+	c = dot(EyetoPoint,EyetoPoint)-
+		dot(EyetoPoint,Direction)*dot(EyetoPoint,Direction)- Radius*Radius; 
+	
+	Sqrt_Val = b*b - 4.0*a*c;	
+
+	if(Sqrt_Val > 0){
+		dist[0] = (-b - sqrt(Sqrt_Val))/(2.0*a); 
+		dist[1] = (-b + sqrt(Sqrt_Val))/(2.0*a);
+	}
+	else{
+		dist[0] = -100.0;
+		dist[1] = -100.0;
+	}
+
+
+	planeDist[0] = Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint + normalize(Direction)*Length, Direction)[0];
+	planeDist[1] = Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint - normalize(Direction)*Length, Direction)[0];
+
+	if(planeDist[0] < dist[0] && planeDist[0] > dist[1])
+		capBool1 = TRUE;
+
+	if(planeDist[0] < dist[1] && planeDist[0] > dist[0])
+		capBool1 = TRUE;
+
+	if(planeDist[1] < dist[0] && planeDist[1] > dist[1])
+		capBool2 = TRUE;
+
+	if(planeDist[1] < dist[1] && planeDist[1] > dist[0])
+		capBool2 = TRUE;	
+
+
+	//Here we go ahead and remove any values which are too far away from the center point
+
+	if(dot((dist[0]*Pixel_Ray + Eye - CenterPoint),(dist[0]*Pixel_Ray + Eye - CenterPoint)) > Length*Length + Radius*Radius)
+		dist[0] = -100.0;
+
+	if(dot((dist[1]*Pixel_Ray + Eye - CenterPoint),(dist[1]*Pixel_Ray + Eye - CenterPoint)) > Length*Length + Radius*Radius)
+		dist[1] = -100.0;
+
+	if(dist[1] > 0 && ((dist[1] < dist[0]) || (dist[0] < 0)))
+		dist[0] = dist[1];
+
+	//Now here I guess we can determine if we have passed through the ring...
+
+	if ((planeDist[0] < planeDist[1]) && capBool1)
+		dist[0] = planeDist[0];
+	if ((planeDist[1] < planeDist[0]) && capBool2)
+		dist[0] = planeDist[1];
+	
+	return dist;
+}
+
+/*This function finds a field of distances from the eye to a Cylinder, if the distance does not exist, a field point
+holds the value -1*/
+inline void Cylinder_Dist_Field(vector3d Eye, vector3d CenterDir, vector3d Direction, 
+	vector3d CenterPoint, float Radius, vector2d DistField[WIDTH][HEIGHT]){
+	vector3d NormalizedDirection;
+	vector3d Pixel_Ray;
+
+	NormalizedDirection = Direction*(1.0/(Direction.length()));
+	for (int w = 0; w < WIDTH; w ++){
+		for(int h = 0; h < HEIGHT; h ++){
+			Pixel_Ray = FindPR(Eye,CenterDir,w,h,WIDTH,HEIGHT,WIDTH_DIST);
+			DistField[w][h] = Cylindar_Intersect_Distance (Eye, Pixel_Ray, 
+				NormalizedDirection, CenterPoint, Radius, 1.0);
+		}
+	}
+}
+
+/*Find the distance from the eye at (0,0,0) to the Cone)*/
+/*Equation formulated on scratch paper*/
+inline vector2d Cone_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d Direction, vector3d CenterPoint,  double Radius, double Length){
+	vector2d dist,planeDist;
+	float Sqrt_Val;
+	float a,b,c;
+	vector3d EyetoPoint = Eye - CenterPoint;
+	vector3d check;
+	double TempVal = 0;
+//	bool capBool1,capBool2;
+//	bool inCone1,inCone2;
+//	capBool1 = FALSE;
+//	capBool2 = FALSE;
+//	inCone1 = FALSE;
+//	inCone2 = FALSE;
+	double OrderedList[4];
+
+
+	a = dot(Pixel_Ray,Pixel_Ray)- (1+Radius*Radius)*dot(Pixel_Ray,Direction)*dot(Pixel_Ray,Direction);
+	b = 2*(dot(Pixel_Ray,EyetoPoint) - (1+Radius*Radius)*dot(Pixel_Ray,Direction)*dot(EyetoPoint,Direction));	
+	c = dot(EyetoPoint,EyetoPoint)-
+		(1+Radius*Radius)*dot(EyetoPoint,Direction)*dot(EyetoPoint,Direction); 
+	
+	Sqrt_Val = b*b - 4.0*a*c;	
+
+	if(Sqrt_Val > 0){
+		dist[0] = (-b - sqrt(Sqrt_Val))/(2.0*a); 
+		dist[1] = (-b + sqrt(Sqrt_Val))/(2.0*a);
+	}
+	else{
+		dist[0] = -100.0;
+		dist[1] = -100.0;
+	}
+
+
+
+	planeDist[0] = Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint + normalize(Direction)*Length, Direction)[0];
+	planeDist[1] = Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint - normalize(Direction)*Length, Direction)[0];
+
+	check = ((planeDist[0]*Pixel_Ray + Eye) - (CenterPoint + normalize(Direction)*Length));
+	if( check.length() >= Radius*Length)
+		planeDist[0] = -100.0;//inCone1 = TRUE;
+
+	check = ((planeDist[1]*Pixel_Ray + Eye) - (CenterPoint - normalize(Direction)*Length));
+	if( check.length() >= Radius*Length)
+		planeDist[1] = -100.0;//inCone2 = TRUE;
+
+/*	if(planeDist[0] < dist[0] && planeDist[0] > dist[1])
+		capBool1 = TRUE;
+
+	if(planeDist[0] < dist[1] && planeDist[0] > dist[0])
+		capBool1 = TRUE;
+
+	if(planeDist[1] < dist[0] && planeDist[1] > dist[1])
+		capBool2 = TRUE;
+
+	if(planeDist[1] < dist[1] && planeDist[1] > dist[0])
+		capBool2 = TRUE;*/
+
+
+
+
+	//Here we go ahead and remove any values which are too far away from the center point to be part of the cone...
+
+	if(dot((dist[0]*Pixel_Ray + Eye - CenterPoint),(dist[0]*Pixel_Ray + Eye - CenterPoint)) > Length*Length + (Radius*Length)*(Radius*Length))
+		dist[0] = -100.0;
+
+	if(dot((dist[1]*Pixel_Ray + Eye - CenterPoint),(dist[1]*Pixel_Ray + Eye - CenterPoint)) > Length*Length + (Radius*Length)*(Radius*Length))
+		dist[1] = -100.0;
+
+	//Now here I guess we can determine if we have passed through the ring...
+
+/*	if(dist[1] > 0 && ((dist[1] < dist[0]) || (dist[0] < 0)))
+		dist[0] = dist[1];
+
+	if(planeDist[0] > 0 && planeDist[1] > 0){
+		if ((planeDist[0] < planeDist[1]) && capBool1 && inCone1){
+			if(dist[0] < planeDist[0]){
+				dist[1] = planeDist[0];
+			}
+			else{		
+				dist[1] = dist[0];
+				dist[0] = planeDist[0];
+			}
+		}
+		if ((planeDist[1] < planeDist[0]) && capBool2 && inCone2){
+			if(dist[0] < planeDist[1]){
+				dist[1] = planeDist[1];
+			}
+			else{		
+				dist[1] = dist[0];
+			dist[0] = planeDist[1];
+			}
+		}
+	}
+	else if(planeDist[0] > 0 && capBool1 && inCone1){
+		if(dist[0] < planeDist[0]){
+			dist[1] = planeDist[0];
+		}
+		else{		
+			dist[1] = dist[0];
+			dist[0] = planeDist[0];
+		}
+	}
+	else if(planeDist[1] > 0 && capBool1 && inCone1){
+		if(dist[0] < planeDist[1]){
+			dist[1] = planeDist[1];
+		}
+		else{		
+			dist[1] = dist[0];
+		dist[0] = planeDist[1];
+		}
+	}*/
+
+
+	OrderedList[0] = dist[0];
+	OrderedList[1] = dist[1];
+	OrderedList[2] = planeDist[0];
+	OrderedList[3] = planeDist[1];
+
+	for(int i = 0; i < 4; i ++){
+		for(int j = 0; j < 3; j ++){
+			if(OrderedList[j] > OrderedList[j+1]){
+				TempVal = OrderedList[j];
+				OrderedList[j] = OrderedList[j+1];
+				OrderedList[j+1] = TempVal;
+			}
+		}
+	}
+
+	int tempCount = 0;
+	for(int i = 0; i < 4; i ++){
+		if(tempCount >= 2)
+			i = 4;
+		else if(OrderedList[i] > 0){
+			dist[tempCount] = OrderedList[i];
+			tempCount ++;		
+		}
+	}
+
+	return dist;
+}
+
+
+/*This function finds a field of distances from the eye to a cone, if the distance does not exist, a field point
+holds the value -1*/
+inline void Cone_Dist_Field(vector3d Eye, vector3d CenterDir, vector3d Direction, 
+	vector3d CenterPoint, float Radius, vector2d DistField[WIDTH][HEIGHT]){
+	vector3d NormalizedDirection;
+	vector3d Pixel_Ray;
+
+	NormalizedDirection = Direction*(1.0/(Direction.length()));
+	for (int w = 0; w < WIDTH; w ++){
+		for(int h = 0; h < HEIGHT; h ++){
+			Pixel_Ray = FindPR(Eye,CenterDir,w,h,WIDTH,HEIGHT,WIDTH_DIST);
+			DistField[w][h] = Cone_Intersect_Distance (Eye, Pixel_Ray, 
+				NormalizedDirection, CenterPoint, Radius, 1.0);
+		}
+	}
+}
+
+
+/*Find the distance from the eye at (0,0,0) to the Bounding Box)*/
+/*Equation formulated on scratch paper*/
+inline vector2d BB_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d FCorner,  vector3d BCorner){
+	vector2d dist;
+	vector3d VecTest;
+	double t;
+	double distvec[6];
+	bool distBool[6];	
+	double min, max;
+	min = 1000000000;
+	max = -1000000000;
+	
+	for(int i = 0; i < 6; i ++){
+		distvec[i] = -100.0;
+		distBool[i] = FALSE;
+	}
+
+	dist[0] = -100.0;
+	
+
+	//First we test things on the front 'panels'
+	t = ((FCorner-Eye)[0])/Pixel_Ray[0];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on the x's
+	if (VecTest[1] <= FCorner[1] && VecTest[1] >= BCorner[1] && 
+		VecTest[2] <= FCorner[2] && VecTest[2] >= BCorner[2]){
+			distvec[0] = t;
+			distBool[0] = TRUE;
+	}
+	
+	t = ((FCorner-Eye)[1])/Pixel_Ray[1];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on the y's
+	if (VecTest[0] <= FCorner[0] && VecTest[0] >= BCorner[0] && 
+		VecTest[2] <= FCorner[2] && VecTest[2] >= BCorner[2]){
+			distvec[1] = t;
+			distBool[1] = TRUE;
+	}
+
+	t = ((FCorner-Eye)[2])/Pixel_Ray[2];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on z's
+	if (VecTest[1] <= FCorner[1] && VecTest[1] >= BCorner[1] && 
+		VecTest[0] <= FCorner[0] && VecTest[0] >= BCorner[0]){
+			distvec[2] = t;
+			distBool[2] = TRUE;
+	}
+
+	//Next we test on the back 'panels'
+	t = ((BCorner-Eye)[0])/Pixel_Ray[0];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on the x's
+	if (VecTest[1] <= FCorner[1] && VecTest[1] >= BCorner[1] && 
+		VecTest[2] <= FCorner[2] && VecTest[2] >= BCorner[2]){
+			distvec[3] = t;
+			distBool[3] = TRUE;
+	}
+	
+	t = ((BCorner-Eye)[1])/Pixel_Ray[1];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on the y's
+	if (VecTest[0] <= FCorner[0] && VecTest[0] >= BCorner[0] && 
+		VecTest[2] <= FCorner[2] && VecTest[2] >= BCorner[2]){
+			distvec[4] = t;
+			distBool[4] = TRUE;
+	}
+
+	t = ((BCorner-Eye)[2])/Pixel_Ray[2];
+	VecTest = t*Pixel_Ray+Eye;
+	//Here we test on z's
+	if (VecTest[1] <= FCorner[1] && VecTest[1] >= BCorner[1] && 
+		VecTest[0] <= FCorner[0] && VecTest[0] >= BCorner[0]){
+			distvec[5] = t;
+			distBool[5] = TRUE;
+	}
+	
+	for(int i = 0; i < 6; i ++){
+		if(max < distvec[i] && distBool[i])
+			max = distvec[i];
+		if(min > distvec[i] && distBool[i] && distvec[i] > 0)
+			min = distvec[i];
+	}	
+
+	dist[0] = min;
+	dist[1] = max;
+	return dist;
+}
+
+/*Find the distance from the eye at (0,0,0) to the rectangle*/
+/*Equation formulated on scratch paper*/
+inline vector2d Rect_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d Direction, vector3d BiNormal, vector3d CenterPoint, double Length,
+	double width, double height){
+
+	//Direction is tied to length, BiNormal is tied height, Exclusion is tied to width;
+	vector3d Exclusion = cross(Direction,BiNormal);
+	vector2d dist;
+	vector3d NewRay,NewEye,FCorner,BCorner;
+	vector3d EyeToCenter = Eye - CenterPoint;//- Eye;
+
+	Exclusion = Normalize(Exclusion);
+
+
+	NewRay[0] = dot(normalize(Direction),Pixel_Ray); 
+	NewRay[1] = dot(normalize(BiNormal),Pixel_Ray);
+	NewRay[2] = dot(normalize(Exclusion),Pixel_Ray);
+	NewRay = normalize(NewRay);
+
+	NewEye[0] = dot(normalize(Direction),EyeToCenter); 
+	NewEye[1] = dot(normalize(BiNormal),EyeToCenter);
+	NewEye[2] = dot(normalize(Exclusion),EyeToCenter);	
+
+	FCorner = vector3d(Length,height,width);
+	BCorner = -FCorner;
+
+	dist = BB_Intersect_Distance(NewEye, NewRay, FCorner,  BCorner);
+	
+
+/*	vector2d dist;
+	double distances[6];
+	bool bound[4];
+	vector3d Exclusion = cross(Direction,BiNormal);
+	dist[0] = dist[1] = -100.0;
+	bound[0] = bound[1] = bound[2] = bound[3] = FALSE;
+
+	//First get the exclusion
+
+
+
+	//First, check the planes along the direction
+
+	distances[0]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint+Direction*Length, Direction))[0];
+	distances[1]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint-Direction*Length, Direction))[0];
+
+	distances[2]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint+BiNormal*height, BiNormal))[0];
+	distances[3]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint-BiNormal*height, BiNormal))[0];
+
+	distances[4]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint+Exclusion*width, Exclusion))[0];
+	distances[5]=(Plane_Intersect_Distance(Eye, Pixel_Ray, CenterPoint-Exclusion*width, Exclusion))[0];
+
+	//Now we find if they are bound inside of the other planes, first we check dist[0]
+	
+	//first we check the directional planes
+	if(distances[0] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[0]+Eye, BiNormal, CenterPoint+BiNormal*height, BiNormal))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[0]+Eye,-1*BiNormal, CenterPoint-BiNormal*height, -1*BiNormal))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[0]+Eye, Exclusion, CenterPoint+Exclusion*width, Exclusion))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[0]+Eye,-1*Exclusion, CenterPoint-Exclusion*width, -1*Exclusion))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3]){
+			distances[0] = -100.0;		
+		}
+	}
+
+	if(distances[1] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[1]+Eye, BiNormal, CenterPoint+BiNormal*height, BiNormal))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[1]+Eye,-1*BiNormal, CenterPoint-BiNormal*height, -1*BiNormal))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[1]+Eye, Exclusion, CenterPoint+Exclusion*width, Exclusion))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[1]+Eye,-1*Exclusion, CenterPoint-Exclusion*width, -1*Exclusion))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3])
+			distances[1] = -100.0;
+	}
+
+	//Next, the binormal planes
+	if(distances[2] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[2]+Eye, Direction, CenterPoint+Direction*Length, Direction))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[2]+Eye,-1*Direction, CenterPoint-Direction*Length, -1*Direction))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[2]+Eye, Exclusion, CenterPoint+Exclusion*width, Exclusion))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[2]+Eye,-1*Exclusion, CenterPoint-Exclusion*width, -1*Exclusion))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3])
+			distances[2] = -100.0;
+	}
+
+	if(distances[3] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[3]+Eye, Direction, CenterPoint+Direction*Length, Direction))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[3]+Eye,-1*Direction, CenterPoint-Direction*Length, -1*Direction))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[3]+Eye, Exclusion, CenterPoint+Exclusion*width, Exclusion))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[3]+Eye,-1*Exclusion, CenterPoint-Exclusion*width, -1*Exclusion))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3])
+			distances[3] = -100.0;
+	}
+
+	//Lastly, we check the exclusionary planes
+	if(distances[4] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[4]+Eye, BiNormal, CenterPoint+BiNormal*height, BiNormal))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[4]+Eye,-1*BiNormal, CenterPoint-BiNormal*height, -1*BiNormal))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[4]+Eye, Direction, CenterPoint+Direction*Length, Direction))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[4]+Eye,-1*Direction, CenterPoint-Direction*Length, -1*Direction))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3])
+			distances[4] = -100.0;
+	}
+
+	if(distances[5] > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distances[5]+Eye, BiNormal, CenterPoint+BiNormal*height, BiNormal))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distances[5]+Eye,-1*BiNormal, CenterPoint-BiNormal*height, -1*BiNormal))[0] > 0);
+
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distances[5]+Eye, Direction, CenterPoint+Direction*Length, Direction))[0] > 0);
+		bound[3] = ((Plane_Intersect_Distance(Pixel_Ray*distances[5]+Eye,-1*Direction, CenterPoint-Direction*Length, -1*Direction))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]||!bound[3])
+			distances[5] = -100.0;
+	}
+
+	for(int i = 0; i < 6; i++){
+		if(dist[0] < 0 && distances[i] > 0)
+			dist[0] = distances[i];
+		if(dist[0] > distances[i] && distances[i] > 0)
+			dist[0] = distances[i];
+	}*/
+
+	return dist;
+}
+
+//Finds the distance to a triangle...
+inline vector2d Tri_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d pt1, vector3d pt2, vector3d pt3){
+	vector2d dist;
+	double distance;
+	bool bound[3];
+	dist[0] = dist[1] = -100.0;
+	bound[0] = bound[1] = bound[2] = TRUE;
+
+	//First get the normal
+	vector3d Normal = cross(pt1 - pt2, pt1 - pt3);
+	vector3d centerpt;
+	Normal = Normalize(Normal);
+
+	centerpt = (pt1+pt2+pt3)*1.0/3.0;
+
+
+	//First, check to see where you would hit the triangle plane
+
+	distance=(Plane_Intersect_Distance(Eye, Pixel_Ray, pt1, Normal))[0];
+
+	//Now we find if they are bound inside of the other planes, first we check dist[0]
+	
+	//first we check the directional planes
+	if(distance > 0){
+		bound[0] = ((Plane_Intersect_Distance(Pixel_Ray*distance+Eye, Normalize(pt1 - centerpt), 
+			pt1, Normalize(cross(Normal,(pt1-pt2)))))[0] > 0);
+		bound[1] = ((Plane_Intersect_Distance(Pixel_Ray*distance+Eye, Normalize(pt2 - centerpt), 
+			pt2, Normalize(cross(Normal,(pt2-pt3)))))[0] > 0);
+		bound[2] = ((Plane_Intersect_Distance(Pixel_Ray*distance+Eye, Normalize(pt3 - centerpt), 
+			pt3, Normalize(cross(Normal,(pt1-pt3)))))[0] > 0);
+		if(!bound[0]||!bound[1]||!bound[2]){
+			distance = -100.0;		
+		}
+	}
+	dist[0] = distance;
+	return dist;
+}
+
+/*Find the distance from the eye at (0,0,0) to the ellipsoid*/
+/*Equation formulated on scratch paper*/
+inline vector2d Ellips_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d Col0,
+		vector3d Col1, vector3d Col2, vector3d CenterPoint){
+	vector2d dist;
+	float Sqrt_Val;
+	float a,b,c;
+	vector3d EyetoPoint = Eye - CenterPoint;
+
+	vector3d PR_Col, Center_Col;
+
+	PR_Col[0] = dot(Pixel_Ray,Col0);
+	PR_Col[1] = dot(Pixel_Ray,Col1);
+	PR_Col[2] = dot(Pixel_Ray,Col2);
+
+	Center_Col[0] = dot(EyetoPoint,Col0);
+	Center_Col[1] = dot(EyetoPoint,Col1);
+	Center_Col[2] = dot(EyetoPoint,Col2);
+
+	a = dot(PR_Col,Pixel_Ray);
+	b = dot(EyetoPoint, PR_Col) + dot(Center_Col, Pixel_Ray);	
+	c = dot(Center_Col, EyetoPoint) - 1;
+	
+	Sqrt_Val = b*b - 4.0*a*c;	
+
+	if(Sqrt_Val > 0){
+		dist[0] = (-b - sqrt(Sqrt_Val))/(2.0*a); 
+		dist[1] = (-b + sqrt(Sqrt_Val))/(2.0*a);
+	}
+	else{
+		dist[0] = -100.0;
+		dist[1] = -100.0;
+	}
+
+	return dist;
+}
+
+/*This function finds a field of distances from the eye to an Ellipsoid, if the distance does not exist, a field point
+holds the value -1*/
+inline void Ellips_Dist_Field(vector3d Eye, vector3d CenterDir, vector3d Col0, vector3d Col1, vector3d Col2, 
+	vector3d CenterPoint, vector2d DistField[WIDTH][HEIGHT]){
+	vector3d NormalizedDirection;
+	vector3d Pixel_Ray;
+
+	for (int w = 0; w < WIDTH; w ++){
+		for(int h = 0; h < HEIGHT; h ++){
+			Pixel_Ray = FindPR(Eye,CenterDir,w,h,WIDTH,HEIGHT,WIDTH_DIST);
+			DistField[w][h] = Ellips_Intersect_Distance (Eye, Pixel_Ray, 
+				Col0, Col1, Col2 , CenterPoint);
+		}
+	}
+}
+
+
+
+/*This function finds a field of distances from the eye to a Plane, if the distance does not exist, a field point
+holds the value -1*/
+inline void Plane_Dist_Field(vector3d Eye, vector3d CenterDir, 
+	vector3d PlanePoint, vector3d Normal, vector2d DistField[WIDTH][HEIGHT]){
+	vector3d NormalizedDirection;
+	vector3d Pixel_Ray;
+
+	for (int w = 0; w < WIDTH; w ++){
+		for(int h = 0; h < HEIGHT; h ++){
+			Pixel_Ray = FindPR(Eye,CenterDir,w,h,WIDTH,HEIGHT,WIDTH_DIST);
+			DistField[w][h] = Plane_Intersect_Distance (Eye, Pixel_Ray, PlanePoint, Normal);
+		}
+	}
+}
+
+/*Find the distance from the eye at (0,0,0) to the sphere)*/
+/*Equation found at: http://en.wikipedia.org/wiki/Line%E2%80%93sphere_intersection*/
+inline vector2d Sphere_Intersect_Distance(vector3d Eye, vector3d Pixel_Ray, vector3d Center, float Radius){
+	vector2d dist;
+	double a,b,c;
+	double Sqrt_Val;
+	
+	a = 1.0;
+	b = 2*(dot(Pixel_Ray,Eye)- dot(Pixel_Ray, Center));
+	c = dot(Eye,Eye)- 2* dot(Eye,Center) + dot(Center, Center) - Radius*Radius;
+	
+	Sqrt_Val = b*b - 4*a*c;
+	if(Sqrt_Val > 0){
+		dist[0] = (-b - sqrt(Sqrt_Val))/(2.0*a); 
+		dist[1] = (-b + sqrt(Sqrt_Val))/(2.0*a);
+	}
+	else{
+		dist[0] = -100.0;
+		dist[1] = -100.0;
+	}
+	return dist;
+
+}
+
+/*This function finds a field of distances from the eye to a sphere, if the distance does not exist, a field point
+holds the value -1*/
+inline void Sphere_Dist_Field(vector3d Eye, vector3d CenterDir,
+	vector3d Center, float Radius, vector2d DistField[WIDTH][HEIGHT]){
+
+	vector3d Pixel_Ray;
+	vector2d Dist;
+	for (int w = 0; w < WIDTH; w ++){
+		for(int h = 0; h < HEIGHT; h ++){
+			Pixel_Ray = FindPR(Eye,CenterDir,w,h,WIDTH,HEIGHT,WIDTH_DIST);
+			DistField[w][h] = Sphere_Intersect_Distance (Eye, Pixel_Ray,Center, Radius);
+		}
+	}
+}
+
